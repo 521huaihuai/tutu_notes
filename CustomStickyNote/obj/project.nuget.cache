@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "u27wknliPQQ=",
+  "success": true,
+  "projectFilePath": "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Administrator\\.nuget\\packages\\hardcodet.notifyicon.wpf\\2.0.1\\hardcodet.notifyicon.wpf.2.0.1.nupkg.sha512"
+  ],
+  "logs": []
+}
