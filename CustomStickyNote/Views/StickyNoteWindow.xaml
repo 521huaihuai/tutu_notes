@@ -6,86 +6,30 @@
         ShowInTaskbar="False"
         WindowStyle="None"
         ResizeMode="NoResize"
-        AllowsTransparency="True"
         Background="Transparent"
+        BorderThickness="0"
         MinWidth="120" MinHeight="106"
         PreviewMouseLeftButtonDown="Note_PreviewMouseLeftButtonDown">
     <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="26"/>
-            <RowDefinition Height="*"/>
-        </Grid.RowDefinitions>
-
-          <!-- 标题栏: 顶部行, 固定 26px, Opacity 动画控制可见性.
-               收起时 Opacity=0 + IsHitTestVisible=False → 完全透明且鼠标穿透, 不占视觉空间.
-               展开时 Opacity=1, 在便签主体上方显示. 内容区位置和大小始终不变. -->
-        <Grid x:Name="HeaderGrid" Grid.Row="0" Background="#66000000" Opacity="0" IsHitTestVisible="False" ClipToBounds="True">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            <!-- 标题区域: 显示/编辑切换 + 编辑图标 (编辑图标紧贴标题文字右侧, 间距24px) -->
-            <StackPanel Grid.Column="0" x:Name="TitleArea" Orientation="Horizontal"
-                        MouseEnter="TitleArea_MouseEnter"
-                        MouseLeave="TitleArea_MouseLeave">
-                <Grid>
-                    <TextBlock x:Name="TitleText"
-                               Text="{Binding HeaderText}"
-                               Foreground="White"
-                               Margin="6,2,6,2"
-                               FontWeight="Bold"
-                               FontSize="12"
-                               TextTrimming="CharacterEllipsis"
-                               MaxWidth="140"/>
-                    <TextBox x:Name="TitleEditBox"
-                             Visibility="Collapsed"
-                             Background="White"
-                             Foreground="Black"
-                             Margin="4,1,4,1"
-                             FontSize="12"
-                             KeyDown="TitleEditBox_KeyDown"
-                             LostFocus="TitleEditBox_LostFocus"/>
-                </Grid>
-                <Button x:Name="EditTitleButton"
-                        Content="✎"
-                        Width="20" Height="20"
-                        Margin="24,0,0,0"
-                        Background="Transparent"
-                        Foreground="White"
-                        BorderThickness="0"
-                        FontSize="12"
-                        Opacity="0"
-                        Click="EditTitle_Click"
-                        ToolTip="编辑标题"/>
-            </StackPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <!-- 关闭按钮 -->
-                <Button Content="×"
-                        Width="20" Height="20"
-                        Background="Transparent"
-                        Foreground="White"
-                        BorderThickness="0"
-                        FontSize="14"
-                        Click="Close_Click"
-                        ToolTip="关闭便签"/>
-            </StackPanel>
-        </Grid>
-
-        <!-- 便签主体: 底部行, Border 包含背景色/内容/工具栏/resize.
-             窗口 Top = 内容区 Top - 26, 窗口 Height = 内容高度 + 26, 内容区屏幕位置恒定. -->
+        <!-- NoteBorder 占满整个窗口 (RowSpan=2), 背景 BgBrush.
+             AllowsTransparency=False 时窗口背景 Transparent 会渲染为黑色,
+             让 NoteBorder 覆盖整个窗口 (包括 HeaderGrid 区域), HeaderGrid 透明时显示 BgBrush 而非黑色. -->
         <Border x:Name="NoteBorder"
-                Grid.Row="1"
+                Grid.Row="0"
+                Grid.RowSpan="2"
                 Background="{Binding BgBrush}"
                 BorderBrush="Transparent"
                 BorderThickness="0"
-                CornerRadius="2">
+                CornerRadius="0">
             <Grid>
-                <!-- 内容输入区 (RichTextBox 支持选中文字样式, 占满便签主体) -->
+                <!-- 内容输入区 (RichTextBox 支持选中文字样式, 顶部留 26px 给 HeaderGrid)
+                     窗口 Top = 内容区 Top - 26, 内容区屏幕位置 = _note.Y (不变). -->
                <RichTextBox x:Name="ContentBox"
                          AcceptsReturn="True"
                          VerticalScrollBarVisibility="Hidden"
                          Background="Transparent"
                          BorderThickness="0"
+                         Margin="0,26,0,0"
                          Padding="6"
                          CaretBrush="Black"
                          FontFamily="Microsoft YaHei"
@@ -197,5 +141,61 @@
                        ToolTip="拖拽调整大小"/>
             </Grid>
         </Border>
+
+        <!-- 标题栏: 浮在 NoteBorder 上方 (后声明 Z order 更高), 顶部 26px.
+             Opacity 动画控制可见性: 收起时 Opacity=0 → 透明, 显示下层 NoteBorder 背景色 (BgBrush).
+             展开时 Opacity=1 → 显示标题栏 (半透明黑色叠加 BgBrush).
+             显式设置 Height=26 VerticalAlignment=Top, 避免依赖 RowDefinitions (SetParent 后可能失效). -->
+        <Grid x:Name="HeaderGrid" Grid.Row="0" Height="26" VerticalAlignment="Top" Background="#66000000" Opacity="0" IsHitTestVisible="False" ClipToBounds="True" Panel.ZIndex="10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <!-- 标题区域: 显示/编辑切换 + 编辑图标 (编辑图标紧贴标题文字右侧, 间距24px) -->
+            <StackPanel Grid.Column="0" x:Name="TitleArea" Orientation="Horizontal"
+                        MouseEnter="TitleArea_MouseEnter"
+                        MouseLeave="TitleArea_MouseLeave">
+                <Grid>
+                    <TextBlock x:Name="TitleText"
+                               Text="{Binding HeaderText}"
+                               Foreground="White"
+                               Margin="6,2,6,2"
+                               FontWeight="Bold"
+                               FontSize="12"
+                               TextTrimming="CharacterEllipsis"
+                               MaxWidth="140"/>
+                    <TextBox x:Name="TitleEditBox"
+                             Visibility="Collapsed"
+                             Background="White"
+                             Foreground="Black"
+                             Margin="4,1,4,1"
+                             FontSize="12"
+                             KeyDown="TitleEditBox_KeyDown"
+                             LostFocus="TitleEditBox_LostFocus"/>
+                </Grid>
+                <Button x:Name="EditTitleButton"
+                        Content="✎"
+                        Width="20" Height="20"
+                        Margin="24,0,0,0"
+                        Background="Transparent"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontSize="12"
+                        Opacity="0"
+                        Click="EditTitle_Click"
+                        ToolTip="编辑标题"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <!-- 关闭按钮 -->
+                <Button Content="×"
+                        Width="20" Height="20"
+                        Background="Transparent"
+                        Foreground="White"
+                        BorderThickness="0"
+                        FontSize="14"
+                        Click="Close_Click"
+                        ToolTip="关闭便签"/>
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>

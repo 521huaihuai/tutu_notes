@@ -64,6 +64,10 @@ public partial class StickyNoteWindow : Window
         _manager = manager;
         DataContext = _note;
 
+        // 限制便签高度不超过屏幕工作区 (去除任务栏), 避免覆盖任务栏
+        var workArea = SystemParameters.WorkArea;
+        if (_note.Height > workArea.Height) _note.Height = workArea.Height - 20;
+
         Left = _note.X;
         // 窗口顶部在内容区上方 HeaderTargetHeight 像素, 内容区屏幕位置 = _note.Y (不变)
         Top = _note.Y - HeaderTargetHeight;
@@ -104,6 +108,10 @@ public partial class StickyNoteWindow : Window
     /// </summary>
      private void StickyNoteWindow_MouseEnter(object sender, MouseEventArgs e)
     {
+        var rootGrid = Content as System.Windows.Controls.Grid;
+        var row0H = rootGrid?.RowDefinitions.Count > 0 ? rootGrid.RowDefinitions[0].ActualHeight : -1;
+        var row1H = rootGrid?.RowDefinitions.Count > 1 ? rootGrid.RowDefinitions[1].ActualHeight : -1;
+        Log($"MouseEnter: Window={ActualWidth}x{ActualHeight}, HeaderGrid.ActualHeight={HeaderGrid.ActualHeight}, Row0={row0H}, Row1={row1H}, NoteBorder.ActualHeight={NoteBorder.ActualHeight}");
         AnimateOpacity(HeaderGrid, 1);
         HeaderGrid.IsHitTestVisible = true;
         AnimateHeight(ToolbarPanel, _toolbarNaturalHeight);
@@ -114,6 +122,7 @@ public partial class StickyNoteWindow : Window
     /// <summary>
     /// 鼠标移出便签: 标题栏淡出(Opacity 动画), 底部工具栏收起, 淡出 resize 手柄.
     /// 若 TextBox/TitleEditBox 正在输入 (有键盘焦点), 则保持显示.
+    /// 鼠标离开便签后恢复桌面固定 (SwitchToPinned), Win+D 仍不隐藏.
     /// </summary>
     private void StickyNoteWindow_MouseLeave(object sender, MouseEventArgs e)
     {
@@ -123,6 +132,8 @@ public partial class StickyNoteWindow : Window
         AnimateHeight(ToolbarPanel, 0);
         AnimateOpacity(ResizeThumb, 0);
         ResizeThumb.IsHitTestVisible = false;
+        // 鼠标离开便签, 恢复桌面固定 (SetParent 回 WorkerW)
+        DesktopPinService.SwitchToPinned();
     }
 
     private static void AnimateHeight(FrameworkElement element, double targetHeight)
@@ -146,7 +157,9 @@ public partial class StickyNoteWindow : Window
     private void ResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
     {
         Width = Math.Max(MinWidth, Width + e.HorizontalChange);
-        Height = Math.Max(MinHeight, Height + e.VerticalChange);
+        // 限制最大高度不超过屏幕工作区, 避免覆盖任务栏
+        var maxH = SystemParameters.WorkArea.Height;
+        Height = Math.Clamp(Height + e.VerticalChange, MinHeight, maxH);
     }
 
     /// <summary>
@@ -237,6 +250,14 @@ public partial class StickyNoteWindow : Window
             ToolbarPanel.Measure(new Size(width, double.PositiveInfinity));
             _toolbarNaturalHeight = ToolbarPanel.DesiredSize.Height;
             ToolbarPanel.Height = 0;
+
+            // 强制重置标题栏/工具栏初始状态 (防止启动时 MouseEnter 误触发导致标题栏可见)
+            HeaderGrid.Opacity = 0;
+            HeaderGrid.IsHitTestVisible = false;
+            ToolbarPanel.Height = 0;
+            ResizeThumb.Opacity = 0;
+            ResizeThumb.IsHitTestVisible = false;
+            Log($"Loaded init: HeaderGrid.Opacity={HeaderGrid.Opacity}, ToolbarPanel.Height={ToolbarPanel.Height}, MouseOver={IsMouseOver}");
         });
 
         if (_pinned) return;
