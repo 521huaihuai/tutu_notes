@@ -53,6 +53,14 @@ internal static class Win32
     [DllImport("user32.dll", SetLastError = true, EntryPoint = "SetWindowLongPtr")]
     public static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
+    // 子类化窗口过程: GWLP_WNDPROC 用于替换窗口的 WndProc.
+    // HwndSource.AddHook 的 handled=true 只阻止 WPF 处理消息, 不阻止 Win32 DefWindowProc,
+    // 所以拦截 WM_WINDOWPOSCHANGING 必须用 SetWindowLongPtr(GWLP_WNDPROC) 子类化.
+    public const int GWLP_WNDPROC = -4;
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallWindowProc(IntPtr lpPrevWndFunc, IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
     // SetWindowPos: 调整窗口 Z order / 位置 / 大小
     public static readonly IntPtr HWND_TOP = IntPtr.Zero;
     public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
@@ -60,6 +68,12 @@ internal static class Win32
     public const uint SWP_NOMOVE = 0x0002;
     public const uint SWP_NOSIZE = 0x0001;
     public const uint SWP_NOACTIVATE = 0x0010;
+    // SWP_HIDEWINDOW / SWP_SHOWWINDOW: 隐藏/显示窗口. SetParent 切换前隐藏可让 DWM
+    // 移除其在合成层的内容, 切换后再显示, 这是清除 SetParent 残影 (DWM 合成层残留) 的标准做法.
+    public const uint SWP_HIDEWINDOW = 0x0080;
+    public const uint SWP_SHOWWINDOW = 0x0040;
+    // SWP_NOCOPYBITS: 丢弃旧位置内容, 避免屏幕残留
+    public const uint SWP_NOCOPYBITS = 0x0100;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
@@ -106,7 +120,31 @@ internal static class Win32
     // ShowWindow: 控制窗口可见性 (SetParent 切换时隐藏/显示避免残影)
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;
+    public const int SW_RESTORE = 9; // 恢复 minimized/maximized 窗口到原始大小/位置
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    // WM_SETREDRAW: 禁止/允许窗口重绘 (SetParent 切换时避免残影, 比 ShowWindow 更可靠)
+    public const int WM_SETREDRAW = 0x000B;
+
+    // RedrawWindow: 强制刷新窗口区域 (WM_SETREDRAW 允许重绘后强制刷新)
+    [DllImport("user32.dll")]
+    public static extern bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
+
+    public const uint RDW_INVALIDATE = 0x0001;
+    public const uint RDW_ALLCHILDREN = 0x0080;
+    public const uint RDW_UPDATENOW = 0x0100;
+    public const uint RDW_ERASE = 0x0004;
+
+    // GetDpiForSystem: 获取系统 DPI (用于 WPF 逻辑像素与物理像素转换)
+    // WPF 窗口大小是逻辑像素 (DIP), SystemParameters.WorkArea 在非 Per-Monitor DPI 感知时
+    // 可能返回物理像素. 用 GetDpiForSystem / 96 得到 DPI 缩放比例, 转换为逻辑像素.
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForSystem();
+
+    // DwmFlush: 强制 DWM 立即合成新帧. SetParent 切换后调用, 让 DWM 重新合成屏幕,
+    // 清除旧位置的合成层残留 (残影). GDI 方法 (RedrawWindow) 对 DWM 合成层无效.
+    [DllImport("dwmapi.dll")]
+    public static extern void DwmFlush();
 }

@@ -1,6 +1,7 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows;
@@ -64,9 +65,17 @@ public partial class StickyNoteWindow : Window
         _manager = manager;
         DataContext = _note;
 
-        // 限制便签高度不超过屏幕工作区 (去除任务栏), 避免覆盖任务栏
-        var workArea = SystemParameters.WorkArea;
-        if (_note.Height > workArea.Height) _note.Height = workArea.Height - 20;
+        // 限制便签高度/宽度不超过屏幕工作区 (去除任务栏), 避免覆盖任务栏或超出屏幕.
+        // 之前 SetParent 可能导致窗口变大, OnBoundsChanged 保存了异常大小到 notes.json,
+        // 这里在加载时强制修正, 防止异常大小持续存在.
+        // 注意: SystemParameters.WorkArea 在非 Per-Monitor DPI 感知时返回物理像素,
+        //       必须用 GetDpiForSystem 转换为逻辑像素 (WPF 窗口大小是逻辑像素).
+        var workArea = GetLogicalWorkArea();
+        Log($"Constructor: workArea={workArea.Width}x{workArea.Height}, note.Height={_note.Height}, note.Width={_note.Width}");
+        if (_note.Height > workArea.Height - HeaderTargetHeight - 20)
+            _note.Height = Math.Max(120, workArea.Height - HeaderTargetHeight - 20);
+        if (_note.Width > workArea.Width)
+            _note.Width = Math.Max(120, workArea.Width);
 
         Left = _note.X;
         // 窗口顶部在内容区上方 HeaderTargetHeight 像素, 内容区屏幕位置 = _note.Y (不变)
@@ -84,6 +93,21 @@ public partial class StickyNoteWindow : Window
         MouseEnter += StickyNoteWindow_MouseEnter;
         MouseLeave += StickyNoteWindow_MouseLeave;
         PreviewMouseWheel += StickyNoteWindow_PreviewMouseWheel;
+        StateChanged += StickyNoteWindow_StateChanged;
+        Closed += StickyNoteWindow_Closed;
+    }
+
+    /// <summary>
+    /// 后备: 如果窗口被编程式 SW_MINIMIZE 最小化 (非"显示桌面"路径), 恢复为 Normal.
+    /// "显示桌面"用 WorkerW 覆盖窗口, 不走最小化路径, 由 ShowDesktopGuardService 处理.
+    /// </summary>
+    private void StickyNoteWindow_StateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+            Log($"StateChanged: restored from Minimized to Normal");
+        }
     }
 
     /// <summary>
@@ -132,8 +156,6 @@ public partial class StickyNoteWindow : Window
         AnimateHeight(ToolbarPanel, 0);
         AnimateOpacity(ResizeThumb, 0);
         ResizeThumb.IsHitTestVisible = false;
-        // 鼠标离开便签, 恢复桌面固定 (SetParent 回 WorkerW)
-        DesktopPinService.SwitchToPinned();
     }
 
     private static void AnimateHeight(FrameworkElement element, double targetHeight)
@@ -232,6 +254,82 @@ public partial class StickyNoteWindow : Window
         TitleText.Visibility = Visibility.Visible;
     }
 
+    // "显示桌面"防护 (方案 A: 拦截 WM_WINDOWPOSCHANGING, 同 Tauri plugin-wallpaper pin 模式).
+    // Win+D/显示桌面会调用 SetWindowPos 把窗口移到 (-32000,-32000) 或带 SWP_HIDEWINDOW.
+    // 子类化窗口过程, 修改 WINDOWPOS.flags 阻止 (WS_EX_TOOLWINDOW 配合).
+    //
+    // 关键: 必须用 SetWindowLongPtr(GWLP_WNDPROC) 子类化, 不能用 HwndSource.AddHook ——
+    // AddHook 的 handled=true 只阻止 WPF 处理消息, 不阻止 Win32 DefWindowProc, 拦截无效.
+    private const int WM_SYSCOMMAND = 0x0112;
+    private const int SC_MINIMIZE = 0xF020;
+    private const int WM_WINDOWPOSCHANGING = 0x0046;
+    private const uint SWP_HIDEWINDOW = 0x0080;
+    private const uint SWP_NOMOVE = 0x0002;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWPOS
+    {
+        public IntPtr hwnd;
+        public IntPtr hwndInsertAfter;
+        public int x;
+        public int y;
+        public int cx;
+        public int cy;
+        public uint flags;
+    }
+
+    // 子类化: 必须保留 delegate 引用防 GC 回收导致崩溃; 保留原 WndProc 指针调用 CallWindowProc.
+    private WndProcDelegate? _subclassDelegate;
+    private IntPtr _originalWndProc = IntPtr.Zero;
+    private delegate IntPtr WndProcDelegate(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        var hwnd = new WindowInteropHelper(this).Handle;
+        _subclassDelegate = new WndProcDelegate(SubclassWndProc);
+        _originalWndProc = Win32.SetWindowLongPtr(hwnd, Win32.GWLP_WNDPROC,
+            Marshal.GetFunctionPointerForDelegate(_subclassDelegate));
+        Log($"OnSourceInitialized: subclassed WndProc, original={_originalWndProc}");
+    }
+
+    private IntPtr SubclassWndProc(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam)
+    {
+        if (msg == WM_WINDOWPOSCHANGING)
+        {
+            var wp = Marshal.PtrToStructure<WINDOWPOS>(lParam);
+            bool blocked = false;
+
+            // 检测 1: 隐藏窗口的尝试 (SWP_HIDEWINDOW)
+            if ((wp.flags & SWP_HIDEWINDOW) != 0)
+            {
+                wp.flags &= ~SWP_HIDEWINDOW;
+                blocked = true;
+            }
+
+            // 检测 2: Win+D 把窗口移到 (-32000,-32000) 特殊位置
+            if (wp.x == -32000 && wp.y == -32000)
+            {
+                wp.flags |= SWP_NOMOVE;
+                blocked = true;
+            }
+
+            if (blocked)
+            {
+                Marshal.StructureToPtr(wp, lParam, false);
+                Log($"SubclassWndProc: blocked WM_WINDOWPOSCHANGING (x={wp.x}, y={wp.y}, flags=0x{wp.flags:X})");
+            }
+        }
+        else if (msg == WM_SYSCOMMAND && ((wParam.ToInt64() & 0xFFF0) == SC_MINIMIZE))
+        {
+            // 后备: 拦截真正的系统最小化命令 (最小化按钮/编程式 ShowWindow(SW_MINIMIZE))
+            Log("SubclassWndProc: intercepted WM_SYSCOMMAND SC_MINIMIZE");
+            return IntPtr.Zero;
+        }
+
+        return Win32.CallWindowProc(_originalWndProc, hWnd, msg, wParam, lParam);
+    }
+
     private void StickyNoteWindow_Loaded(object sender, RoutedEventArgs e)
     {
         // 加载文档 (在 _isLoaded=true 前, 避免触发 SelectionChanged 时误更新控件)
@@ -261,9 +359,19 @@ public partial class StickyNoteWindow : Window
         });
 
         if (_pinned) return;
-        // 将窗口贴到桌面层 (WorkerW 子窗口)
         DesktopPinService.PinToDesktop(this);
         _pinned = true;
+        // 注册"显示桌面"防护: WorkerW/Progman 前台时设 Topmost, 普通应用前台时取消,
+        // 工具窗口前台时保持 (智能 Topmost 策略, 详见 ShowDesktopGuardService).
+        ShowDesktopGuardService.Register(this);
+    }
+
+    /// <summary>
+    /// 窗口关闭.
+    /// </summary>
+    private void StickyNoteWindow_Closed(object? sender, EventArgs e)
+    {
+        ShowDesktopGuardService.Unregister(this);
     }
 
     /// <summary>
@@ -580,6 +688,22 @@ public partial class StickyNoteWindow : Window
     }
 
     /// <summary>
+    /// 获取屏幕工作区的逻辑像素 (DIP).
+    /// SystemParameters.WorkArea 在非 Per-Monitor DPI 感知时返回物理像素,
+    /// 用 GetDpiForSystem / 96 得到 DPI 缩放比例, 转换为逻辑像素.
+    /// WPF 窗口大小 (Width/Height) 是逻辑像素, 必须用逻辑像素比较.
+    /// </summary>
+    private static Rect GetLogicalWorkArea()
+    {
+        var workArea = SystemParameters.WorkArea;
+        uint dpi = Win32.GetDpiForSystem();
+        double dpiScale = dpi > 0 ? dpi / 96.0 : 1.0;
+        if (dpiScale <= 0) dpiScale = 1.0;
+        return new Rect(workArea.X / dpiScale, workArea.Y / dpiScale,
+                        workArea.Width / dpiScale, workArea.Height / dpiScale);
+    }
+
+    /// <summary>
     /// 拖拽便签: 用 Win32 API 发送 WM_NCLBUTTONDOWN(HTCAPTION), 让系统接管标题栏拖动.
     /// 优势: 不阻塞 UI 线程, 不与子控件(Button/TextBox)的鼠标事件冲突,
     ///       不需要 CaptureMouse (后者会让 Button 收不到 Click 事件).
@@ -696,6 +820,21 @@ public partial class StickyNoteWindow : Window
         _note.Y = Top + HeaderTargetHeight;
         _note.Width = Width;
         _note.Height = Height - HeaderTargetHeight;
+
+        // 防御性限制: SetParent 切换时窗口大小可能被 Windows 临时改变 (变大), 
+        // 不保存这种异常大小, 防止持久化错误值导致下次启动窗口异常.
+        var workArea = GetLogicalWorkArea();
+        if (_note.Height > workArea.Height - 20)
+        {
+            Log($"OnBoundsChanged: height {_note.Height} > workArea {workArea.Height - 20}, clamped");
+            _note.Height = workArea.Height - 20 - HeaderTargetHeight;
+        }
+        if (_note.Width > workArea.Width)
+        {
+            Log($"OnBoundsChanged: width {_note.Width} > workArea {workArea.Width}, clamped");
+            _note.Width = workArea.Width;
+        }
+
         // 防抖保存
         _saveTimer?.Stop();
         _saveTimer ??= new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };

@@ -6,7 +6,7 @@
         ShowInTaskbar="False"
         WindowStyle="None"
         ResizeMode="NoResize"
-        Background="Transparent"
+        Background="{Binding BgBrush}"
         BorderThickness="0"
         MinWidth="120" MinHeight="106"
         PreviewMouseLeftButtonDown="Note_PreviewMouseLeftButtonDown">

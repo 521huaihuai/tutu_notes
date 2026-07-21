@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj": {}
+    "E:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj": {}
   },
   "projects": {
-    "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj": {
+    "E:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj",
+        "projectUniqueName": "E:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj",
         "projectName": "CustomStickyNote",
-        "projectPath": "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj",
+        "projectPath": "E:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\CustomStickyNote.csproj",
         "packagesPath": "C:\\Users\\Administrator\\.nuget\\packages\\",
-        "outputPath": "e:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\obj\\",
+        "outputPath": "E:\\projects\\ClaudeCode\\2windows-app\\定制化系统便利贴\\CustomStickyNote\\obj\\",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "C:\\Users\\Administrator\\AppData\\Roaming\\NuGet\\NuGet.Config"
