@@ -117,6 +117,15 @@ internal static class Win32
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
+    // IsWindowVisible: 窗口是否可见 (WS_VISIBLE 标志). 用于区分"用户主动激活的可见窗口"
+    // 与"后台抢前台的隐藏窗口" (如 Chrome 后台进程窗口).
+    [DllImport("user32.dll")]
+    public static extern bool IsWindowVisible(IntPtr hWnd);
+
+    // IsIconic: 窗口是否最小化. 最小化窗口不应导致便签取消 Topmost.
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+
     // ShowWindow: 控制窗口可见性 (SetParent 切换时隐藏/显示避免残影)
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;

@@ -126,7 +126,13 @@ public static class ShowDesktopGuardService
         var exStyle = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
         const long WS_EX_TOOLWINDOW = 0x00000080;
         var fgIsToolWindow = (exStyle & WS_EX_TOOLWINDOW) != 0;
-        Log($"OnForegroundChanged: hwnd={hwnd}, class='{className}', isDesktop={isDesktop}, fgIsToolWindow={fgIsToolWindow}, _isDesktopShown={_isDesktopShown}");
+        // 区分"用户主动激活的可见窗口"与"后台抢前台的隐藏窗口":
+        // - 用户点击任务栏浏览器: 窗口可见 (IsWindowVisible=true) 且非最小化 (IsIconic=false)
+        // - Chrome 后台进程抢前台: 窗口不可见 (IsWindowVisible=false)
+        var fgIsVisible = Win32.IsWindowVisible(hwnd);
+        var fgIsIconic = Win32.IsIconic(hwnd);
+        var fgIsActive = fgIsVisible && !fgIsIconic;
+        Log($"OnForegroundChanged: hwnd={hwnd}, class='{className}', isDesktop={isDesktop}, fgIsToolWindow={fgIsToolWindow}, fgIsVisible={fgIsVisible}, fgIsIconic={fgIsIconic}, fgIsActive={fgIsActive}, _isDesktopShown={_isDesktopShown}");
 
         lock (_lock)
         {
@@ -148,17 +154,18 @@ public static class ShowDesktopGuardService
                     // 工具窗口前台: 不动 (保持当前 Topmost 状态)
                     Log($"  keep: ToolWindow foreground, no Z order change for note={noteHwnd}");
                 }
-                else if (_isDesktopShown)
+                else if (!fgIsActive)
                 {
-                    // 普通窗口前台, 但当前处于"显示桌面"状态: 不取消 Topmost
-                    // (后台窗口抢前台是瞬时事件, 不应导致便签被 WorkerW 遮盖)
-                    Log($"  keep: _isDesktopShown=true, ignore normal window foreground for note={noteHwnd}");
+                    // 前台窗口不可见或最小化 (后台窗口抢前台): 不取消 Topmost
+                    // 避免"显示桌面"状态下 Chrome 后台进程抢前台导致便签被 WorkerW 遮盖
+                    Log($"  keep: foreground not active (visible={fgIsVisible}, iconic={fgIsIconic}), keep Z order for note={noteHwnd}");
                 }
                 else
                 {
-                    // 普通窗口前台, 非"显示桌面"状态: 取消 Topmost
+                    // 可见的普通应用窗口前台 (用户主动激活): 取消 Topmost, 退出"显示桌面"状态
+                    _isDesktopShown = false;
                     var ok = Win32.SetWindowPos(noteHwnd, Win32.HWND_NOTOPMOST, 0, 0, 0, 0, flags);
-                    Log($"  SetWindowPos(note={noteHwnd}, NOTOPMOST) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
+                    Log($"  SetWindowPos(note={noteHwnd}, NOTOPMOST) ok={ok}, lastError={Marshal.GetLastWin32Error()} (active foreground, exit desktop shown)");
                 }
             }
         }
@@ -183,10 +190,13 @@ public static class ShowDesktopGuardService
         }
         else if (eventType == EVENT_SYSTEM_RESTOREALL)
         {
-            // 恢复: 取消所有便签 Topmost
+            // 恢复: 取消所有便签 Topmost, 并排在恢复窗口 (hwnd) 之后
+            // 关键: 用 SetWindowPos(note, hwnd) 而非 HWND_NOTOPMOST —
+            // HWND_NOTOPMOST 会把便签放在非 Topmost 窗口 Z order 顶部, 仍在恢复的浏览器之上,
+            // 导致浏览器被便签遮挡. 排在恢复窗口之后, 确保浏览器在便签之上.
             _isDesktopShown = false;
-            Log($"  RESTOREALL: _isDesktopShown=false, setting all notes NOTOPMOST");
-            SetAllNotesTopmost(false);
+            Log($"  RESTOREALL: _isDesktopShown=false, setting all notes after restored window (hwnd={hwnd})");
+            SetAllNotesZOrder(hwnd);
         }
     }
 
@@ -204,6 +214,33 @@ public static class ShowDesktopGuardService
                     if (noteHwnd == IntPtr.Zero) continue;
                     var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
                     Log($"  SetWindowPos(note={noteHwnd}, {(topmost ? "TOPMOST" : "NOTOPMOST")}) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
+                }
+                catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
+            }
+        }
+    }
+
+    /// <summary>
+    /// 把所有便签排在指定窗口之后 (Z order 在其下方).
+    /// 用于 RESTOREALL: 排在恢复的浏览器之后, 确保浏览器在便签之上不被遮挡.
+    /// </summary>
+    private static void SetAllNotesZOrder(IntPtr afterHwnd)
+    {
+        lock (_lock)
+        {
+            const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
+            foreach (var w in _windows)
+            {
+                try
+                {
+                    var noteHwnd = new WindowInteropHelper(w).Handle;
+                    if (noteHwnd == IntPtr.Zero) continue;
+                    // 排在恢复窗口之后; 若 afterHwnd 无效则 fallback 到 NOTOPMOST
+                    IntPtr insertAfter = (afterHwnd != IntPtr.Zero && afterHwnd != noteHwnd)
+                        ? afterHwnd
+                        : Win32.HWND_NOTOPMOST;
+                    var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
+                    Log($"  SetWindowPos(note={noteHwnd}, after={insertAfter}) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
                 }
                 catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
             }
