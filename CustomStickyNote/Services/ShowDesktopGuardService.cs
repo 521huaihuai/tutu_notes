@@ -71,6 +71,9 @@ public static class ShowDesktopGuardService
 
     /// <summary>
     /// 注册窗口, 当"显示桌面"触发时自动设为 Topmost 浮在桌面之上.
+    /// 同时初始化 Z order: 把便签排到当前前台窗口之后, 确保启动时就在普通窗口之下.
+    /// 后续依靠 "只在 Topmost 时调整" 逻辑 + Windows 自然 Z order 管理,
+    /// 新激活的窗口会被提到非 Topmost 顶部, 便签保持在原位置 (旧窗口之下), 不会遮挡任何窗口.
     /// </summary>
     public static void Register(Window window)
     {
@@ -79,7 +82,61 @@ public static class ShowDesktopGuardService
             _windows.Add(window);
             Log($"Register: window count={_windows.Count}");
             EnsureHook();
+            InitializeNoteZOrder(window);
         }
+    }
+
+    /// <summary>
+    /// 初始化便签 Z order: 排到 Z order 中最低的普通应用窗口之后.
+    /// 解决便签启动时 Z order 在顶部遮挡所有窗口的问题.
+    /// 排在最低普通窗口之后, 确保便签在所有普通窗口之下 (不会被任何普通窗口遮挡问题反向影响).
+    /// 后续新窗口激活会被 Windows 提到非 Topmost 顶部, 便签保持在原位置, 始终在所有窗口之下.
+    /// </summary>
+    private static void InitializeNoteZOrder(Window window)
+    {
+        try
+        {
+            var noteHwnd = new WindowInteropHelper(window).Handle;
+            if (noteHwnd == IntPtr.Zero) return;
+
+            var bottomNormal = FindBottomNormalWindow(noteHwnd);
+            if (bottomNormal != IntPtr.Zero)
+            {
+                const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
+                var ok = Win32.SetWindowPos(noteHwnd, bottomNormal, 0, 0, 0, 0, flags);
+                var cls = GetWindowClass(bottomNormal);
+                Log($"InitializeNoteZOrder: SetWindowPos(note={noteHwnd}, after={bottomNormal}('{cls}')) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
+            }
+            else
+            {
+                Log($"InitializeNoteZOrder: no normal window found, skip (note={noteHwnd})");
+            }
+        }
+        catch (Exception ex) { Log($"InitializeNoteZOrder failed: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// 遍历 Z order (从上到下), 找到最低的 (Z order 最底部) 普通应用窗口.
+    /// 普通窗口定义: 可见、非最小化、非工具窗口、非桌面 (WorkerW/Progman)、非便签自身.
+    /// </summary>
+    private static IntPtr FindBottomNormalWindow(IntPtr excludeHwnd)
+    {
+        var result = IntPtr.Zero;
+        Win32.EnumWindows((hwnd, _) =>
+        {
+            if (hwnd == excludeHwnd) return true;
+            var className = GetWindowClass(hwnd);
+            if (className == WorkerWClass || className == ProgmanClass) return true;
+            if (!Win32.IsWindowVisible(hwnd)) return true;
+            if (Win32.IsIconic(hwnd)) return true;
+            var exStyle = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
+            const long WS_EX_TOOLWINDOW = 0x00000080;
+            if ((exStyle & WS_EX_TOOLWINDOW) != 0) return true;
+            // 记录最后一个匹配的 (Z order 最底部的普通窗口)
+            result = hwnd;
+            return true; // 继续遍历
+        }, IntPtr.Zero);
+        return result;
     }
 
     /// <summary>
