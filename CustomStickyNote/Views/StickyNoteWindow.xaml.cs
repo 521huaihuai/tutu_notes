@@ -79,7 +79,8 @@ public partial class StickyNoteWindow : Window
 
         Left = _note.X;
         // 窗口顶部在内容区上方 HeaderTargetHeight 像素, 内容区屏幕位置 = _note.Y (不变)
-        Top = _note.Y - HeaderTargetHeight;
+        // 顶部至少距屏幕顶部 24px, 避免贴边
+        Top = Math.Max(24, _note.Y - HeaderTargetHeight);
         Width = _note.Width;
         // 窗口高度 = 内容高度 + 标题栏高度, 内容区高度 = _note.Height (不变)
         Height = _note.Height + HeaderTargetHeight;
@@ -90,11 +91,45 @@ public partial class StickyNoteWindow : Window
         Loaded += StickyNoteWindow_Loaded;
         LocationChanged += OnBoundsChanged;
         SizeChanged += OnBoundsChanged;
-        MouseEnter += StickyNoteWindow_MouseEnter;
-        MouseLeave += StickyNoteWindow_MouseLeave;
         PreviewMouseWheel += StickyNoteWindow_PreviewMouseWheel;
         StateChanged += StickyNoteWindow_StateChanged;
         Closed += StickyNoteWindow_Closed;
+    }
+
+    /// <summary>
+    /// 工具栏(标题栏 + 底部配置栏 + resize 手柄)是否可见.
+    /// 通过右上角眼睛图标点击切换, 不再用鼠标悬停控制.
+    /// </summary>
+    private bool _toolbarVisible = false;
+
+    /// <summary>
+    /// 点击右上角眼睛图标: 切换标题栏/底部工具栏/resize 手柄的显示/隐藏.
+    /// </summary>
+    private void ToggleToolbar_Click(object sender, RoutedEventArgs e)
+    {
+        _toolbarVisible = !_toolbarVisible;
+        UpdateToolbarVisibility();
+        Log($"ToggleToolbar: _toolbarVisible={_toolbarVisible}");
+    }
+
+    /// <summary>
+    /// 根据 _toolbarVisible 更新标题栏/工具栏/resize 手柄的可见性 (带动画).
+    /// </summary>
+    private void UpdateToolbarVisibility()
+    {
+        var opacity = _toolbarVisible ? 1.0 : 0.0;
+        var hitTest = _toolbarVisible;
+
+        AnimateOpacity(HeaderGrid, opacity);
+        HeaderGrid.IsHitTestVisible = hitTest;
+
+        AnimateHeight(ToolbarPanel, _toolbarVisible ? _toolbarNaturalHeight : 0);
+
+        AnimateOpacity(ResizeThumb, opacity);
+        ResizeThumb.IsHitTestVisible = hitTest;
+
+        // 眼睛图标随状态变化: 显示时睁眼 ◉, 隐藏时闭眼 ○
+        ToggleToolbarButton.Content = _toolbarVisible ? "◉" : "○";
     }
 
     /// <summary>
@@ -124,38 +159,6 @@ public partial class StickyNoteWindow : Window
         OpacitySlider.Value = _note.Opacity;
         _manager.UpdateNote(_note);
         Log($"BgOpacity changed to {_note.Opacity:F2}");
-    }
-
-    /// <summary>
-    /// 鼠标移入便签: 标题栏淡入显示(Opacity 动画), 底部工具栏展开, 淡入 resize 手柄.
-    /// 窗口不移动, 内容区位置和大小始终不变.
-    /// </summary>
-     private void StickyNoteWindow_MouseEnter(object sender, MouseEventArgs e)
-    {
-        var rootGrid = Content as System.Windows.Controls.Grid;
-        var row0H = rootGrid?.RowDefinitions.Count > 0 ? rootGrid.RowDefinitions[0].ActualHeight : -1;
-        var row1H = rootGrid?.RowDefinitions.Count > 1 ? rootGrid.RowDefinitions[1].ActualHeight : -1;
-        Log($"MouseEnter: Window={ActualWidth}x{ActualHeight}, HeaderGrid.ActualHeight={HeaderGrid.ActualHeight}, Row0={row0H}, Row1={row1H}, NoteBorder.ActualHeight={NoteBorder.ActualHeight}");
-        AnimateOpacity(HeaderGrid, 1);
-        HeaderGrid.IsHitTestVisible = true;
-        AnimateHeight(ToolbarPanel, _toolbarNaturalHeight);
-        AnimateOpacity(ResizeThumb, 1);
-        ResizeThumb.IsHitTestVisible = true;
-    }
-
-    /// <summary>
-    /// 鼠标移出便签: 标题栏淡出(Opacity 动画), 底部工具栏收起, 淡出 resize 手柄.
-    /// 若 TextBox/TitleEditBox 正在输入 (有键盘焦点), 则保持显示.
-    /// 鼠标离开便签后恢复桌面固定 (SwitchToPinned), Win+D 仍不隐藏.
-    /// </summary>
-    private void StickyNoteWindow_MouseLeave(object sender, MouseEventArgs e)
-    {
-        if (ContentBox.IsKeyboardFocused || TitleEditBox.IsKeyboardFocused) return;
-        AnimateOpacity(HeaderGrid, 0);
-        HeaderGrid.IsHitTestVisible = false;
-        AnimateHeight(ToolbarPanel, 0);
-        AnimateOpacity(ResizeThumb, 0);
-        ResizeThumb.IsHitTestVisible = false;
     }
 
     private static void AnimateHeight(FrameworkElement element, double targetHeight)
@@ -340,7 +343,7 @@ public partial class StickyNoteWindow : Window
         OpacitySlider.Value = _note.Opacity;
         _isLoaded = true;
 
-        // 布局完成后计算底部工具栏自然高度 (供 MouseEnter 动画使用)
+        // 布局完成后计算底部工具栏自然高度 (供眼睛图标切换时动画使用)
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
         {
             var width = ActualWidth > 0 ? ActualWidth : Width;
@@ -349,13 +352,9 @@ public partial class StickyNoteWindow : Window
             _toolbarNaturalHeight = ToolbarPanel.DesiredSize.Height;
             ToolbarPanel.Height = 0;
 
-            // 强制重置标题栏/工具栏初始状态 (防止启动时 MouseEnter 误触发导致标题栏可见)
-            HeaderGrid.Opacity = 0;
-            HeaderGrid.IsHitTestVisible = false;
-            ToolbarPanel.Height = 0;
-            ResizeThumb.Opacity = 0;
-            ResizeThumb.IsHitTestVisible = false;
-            Log($"Loaded init: HeaderGrid.Opacity={HeaderGrid.Opacity}, ToolbarPanel.Height={ToolbarPanel.Height}, MouseOver={IsMouseOver}");
+            // 初始状态: 工具栏隐藏 (_toolbarVisible=false, 默认值)
+            UpdateToolbarVisibility();
+            Log($"Loaded init: _toolbarNaturalHeight={_toolbarNaturalHeight}, _toolbarVisible={_toolbarVisible}");
         });
 
         if (_pinned) return;
@@ -756,6 +755,8 @@ public partial class StickyNoteWindow : Window
         // 用 BeginInvoke 确保在 WPF 处理完 WM_MOVE 消息后再读取 Left/Top
         Dispatcher.BeginInvoke(new Action(() =>
         {
+            // 顶部至少距屏幕顶部 24px, 避免贴边
+            if (Top < 24) Top = 24;
             Log($"BeginInvoke: Left={Left}, Top={Top}, note.X={_note.X}, note.Y={_note.Y}");
             _note.X = Left;
             _note.Y = Top;

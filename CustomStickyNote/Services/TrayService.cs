@@ -24,7 +24,7 @@ public sealed class TrayService : IDisposable
     {
         _icon = new TaskbarIcon
         {
-            Icon = System.Drawing.SystemIcons.Information,
+            Icon = LoadTrayIcon(),
             ToolTipText = "便利贴 (左键双击新建, 右键菜单)"
         };
 
@@ -32,6 +32,26 @@ public sealed class TrayService : IDisposable
         _icon.TrayMouseDoubleClick += (s, e) => _manager.CreateNote();
 
         BuildMenu();
+    }
+
+    /// <summary>
+    /// 从嵌入资源 (Resources/tray.ico) 加载托盘图标.
+    /// 失败时回退到系统 Information 图标.
+    /// </summary>
+    private static System.Drawing.Icon LoadTrayIcon()
+    {
+        try
+        {
+            var uri = new Uri("pack://application:,,,/Resources/tray.ico");
+            var info = Application.GetResourceStream(uri);
+            if (info != null)
+            {
+                using var stream = info.Stream;
+                return new System.Drawing.Icon(stream);
+            }
+        }
+        catch { }
+        return System.Drawing.SystemIcons.Information;
     }
 
     private void BuildMenu()

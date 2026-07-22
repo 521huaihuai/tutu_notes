@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
 using CustomStickyNote.Native;
@@ -53,6 +54,10 @@ public static class ShowDesktopGuardService
 
     // "显示桌面"状态标志: true 表示当前处于显示桌面状态 (便签应保持 Topmost)
     private static bool _isDesktopShown = false;
+
+    // 延迟检查定时器: 前台窗口是最小化状态时, 延迟 300ms 再检查是否恢复可见.
+    // 区分"用户主动点击桌面应用窗口(正在恢复)"与"后台窗口抢前台(保持最小化)".
+    private static Timer? _deferredCheckTimer;
 
     private static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -156,16 +161,32 @@ public static class ShowDesktopGuardService
                 }
                 else if (!fgIsActive)
                 {
-                    // 前台窗口不可见或最小化 (后台窗口抢前台): 不取消 Topmost
-                    // 避免"显示桌面"状态下 Chrome 后台进程抢前台导致便签被 WorkerW 遮盖
-                    Log($"  keep: foreground not active (visible={fgIsVisible}, iconic={fgIsIconic}), keep Z order for note={noteHwnd}");
+                    // 前台窗口不可见或最小化: 可能是后台窗口抢前台, 也可能是用户点击桌面应用窗口(正在恢复).
+                    // 延迟 300ms 检查: 若窗口恢复可见 → 用户主动激活, 取消 Topmost; 否则保持.
+                    Log($"  defer: foreground not active (visible={fgIsVisible}, iconic={fgIsIconic}), starting deferred check");
+                    StartDeferredCheck();
                 }
                 else
                 {
-                    // 可见的普通应用窗口前台 (用户主动激活): 取消 Topmost, 退出"显示桌面"状态
+                    // 可见的普通应用窗口前台 (用户主动激活).
+                    // 关键: 只在便签当前是 Topmost 时才调整 Z order (取消 Topmost, 排在前台窗口之后).
+                    // 如果便签已经是非 Topmost, 不调整 Z order — Windows 会把新激活的窗口提到非 Topmost 顶部,
+                    // 便签保持在原来的位置 (之前激活的窗口 A 之下), 不会被提到新窗口 B 之后遮挡 A.
+                    // 之前的 bug: 每次都 SetWindowPos(note, hwnd) 把便签排在新前台之后,
+                    // 导致点击 B 时便签被提到 B 之后、A 之前, 遮挡了 A.
                     _isDesktopShown = false;
-                    var ok = Win32.SetWindowPos(noteHwnd, Win32.HWND_NOTOPMOST, 0, 0, 0, 0, flags);
-                    Log($"  SetWindowPos(note={noteHwnd}, NOTOPMOST) ok={ok}, lastError={Marshal.GetLastWin32Error()} (active foreground, exit desktop shown)");
+                    var noteExStyle = Win32.GetWindowLongPtr(noteHwnd, Win32.GWL_EXSTYLE).ToInt64();
+                    const long WS_EX_TOPMOST = 0x00000008;
+                    var noteIsTopmost = (noteExStyle & WS_EX_TOPMOST) != 0;
+                    if (noteIsTopmost)
+                    {
+                        var ok = Win32.SetWindowPos(noteHwnd, hwnd, 0, 0, 0, 0, flags);
+                        Log($"  SetWindowPos(note={noteHwnd}, after={hwnd}) ok={ok}, lastError={Marshal.GetLastWin32Error()} (was Topmost, cancelled and placed after foreground)");
+                    }
+                    else
+                    {
+                        Log($"  keep: note is not Topmost, no Z order change (foreground={hwnd})");
+                    }
                 }
             }
         }
@@ -252,6 +273,79 @@ public static class ShowDesktopGuardService
         var sb = new StringBuilder(64);
         Win32.GetClassName(hwnd, sb, sb.Capacity);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 启动延迟检查: 300ms 后检查当前前台窗口是否恢复可见.
+    /// 用于区分"用户主动点击桌面应用窗口(正在恢复)"与"后台窗口抢前台(保持最小化)".
+    /// - 用户主动点击: 窗口恢复可见 (IsIconic=false) → 取消 Topmost, 排在前台窗口之后
+    /// - 后台窗口抢前台: 窗口保持最小化 (IsIconic=true) → 保持 Topmost
+    /// </summary>
+    private static void StartDeferredCheck()
+    {
+        _deferredCheckTimer?.Dispose();
+        _deferredCheckTimer = new Timer(_ =>
+        {
+            Application.Current?.Dispatcher.Invoke(() =>
+            {
+                var fg = Win32.GetForegroundWindow();
+                if (fg == IntPtr.Zero)
+                {
+                    Log("DeferredCheck: fg is zero, skip");
+                    return;
+                }
+                var isIconic = Win32.IsIconic(fg);
+                var isVisible = Win32.IsWindowVisible(fg);
+                Log($"DeferredCheck: fg={fg}, isIconic={isIconic}, isVisible={isVisible}, _isDesktopShown={_isDesktopShown}");
+                if (!isIconic && isVisible)
+                {
+                    // 窗口已恢复可见: 用户主动激活.
+                    // 只在便签当前是 Topmost 时才取消 Topmost 并调整 Z order.
+                    // 如果便签已经是非 Topmost, 不调整 — 避免把便签提到新前台之后遮挡之前的窗口.
+                    _isDesktopShown = false;
+                    SetAllNotesZOrderIfTopmost(fg);
+                    Log("DeferredCheck: window restored, cancelled Topmost if was Topmost");
+                }
+                else
+                {
+                    Log("DeferredCheck: window still iconic/hidden, keep Topmost");
+                }
+            });
+        }, null, 300, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// 只在便签当前是 Topmost 时, 才取消 Topmost 并排在指定窗口之后.
+    /// 如果便签已经是非 Topmost, 不调整 Z order — 避免把便签提到新前台之后遮挡之前的窗口.
+    /// </summary>
+    private static void SetAllNotesZOrderIfTopmost(IntPtr afterHwnd)
+    {
+        lock (_lock)
+        {
+            const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
+            const long WS_EX_TOPMOST = 0x00000008;
+            foreach (var w in _windows)
+            {
+                try
+                {
+                    var noteHwnd = new WindowInteropHelper(w).Handle;
+                    if (noteHwnd == IntPtr.Zero) continue;
+                    var noteExStyle = Win32.GetWindowLongPtr(noteHwnd, Win32.GWL_EXSTYLE).ToInt64();
+                    var noteIsTopmost = (noteExStyle & WS_EX_TOPMOST) != 0;
+                    if (!noteIsTopmost)
+                    {
+                        Log($"  skip: note={noteHwnd} is not Topmost, no Z order change");
+                        continue;
+                    }
+                    IntPtr insertAfter = (afterHwnd != IntPtr.Zero && afterHwnd != noteHwnd)
+                        ? afterHwnd
+                        : Win32.HWND_NOTOPMOST;
+                    var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
+                    Log($"  SetWindowPos(note={noteHwnd}, after={insertAfter}) ok={ok}, lastError={Marshal.GetLastWin32Error()} (was Topmost, cancelled)");
+                }
+                catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
+            }
+        }
     }
 
     [DllImport("user32.dll")]

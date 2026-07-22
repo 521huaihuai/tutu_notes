@@ -197,5 +197,22 @@
                         ToolTip="关闭便签"/>
             </StackPanel>
         </Grid>
+
+        <!-- 右上角眼睛图标 (始终可见, 点击切换标题栏/工具栏显示/隐藏).
+             放在根 Grid 中 HeaderGrid 之后, Z order 高于 HeaderGrid, 不被遮挡.
+             右边距 26px 避开 HeaderGrid 中的关闭按钮 (20px 宽 + 6px 间隔). -->
+        <Button x:Name="ToggleToolbarButton"
+                HorizontalAlignment="Right"
+                VerticalAlignment="Top"
+                Width="20" Height="20"
+                Margin="0,2,26,0"
+                Background="Transparent"
+                Foreground="#DD000000"
+                BorderThickness="0"
+                FontSize="14"
+                Content="○"
+                Click="ToggleToolbar_Click"
+                ToolTip="显示/隐藏工具栏"
+                Panel.ZIndex="30"/>
     </Grid>
 </Window>

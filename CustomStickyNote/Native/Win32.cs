@@ -126,6 +126,10 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool IsIconic(IntPtr hWnd);
 
+    // GetForegroundWindow: 获取当前前台窗口. 用于延迟检查窗口恢复可见后取消 Topmost.
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
     // ShowWindow: 控制窗口可见性 (SetParent 切换时隐藏/显示避免残影)
     public const int SW_HIDE = 0;
     public const int SW_SHOWNOACTIVATE = 4;
