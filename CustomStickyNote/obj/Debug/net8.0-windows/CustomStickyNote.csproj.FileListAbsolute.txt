@@ -22,3 +22,8 @@ e:\projects\ClaudeCode\2windows-app\定制化系统便利贴\CustomStickyNote\ob
 e:\projects\ClaudeCode\2windows-app\定制化系统便利贴\CustomStickyNote\obj\Debug\net8.0-windows\CustomStickyNote.pdb
 e:\projects\ClaudeCode\2windows-app\定制化系统便利贴\CustomStickyNote\obj\Debug\net8.0-windows\CustomStickyNote.genruntimeconfig.cache
 e:\projects\ClaudeCode\2windows-app\定制化系统便利贴\CustomStickyNote\obj\Debug\net8.0-windows\ref\CustomStickyNote.dll
+C:\Users\Administrator\AppData\Local\Temp\CustomStickyNote-build-20260723\CustomStickyNote.exe
+C:\Users\Administrator\AppData\Local\Temp\CustomStickyNote-build-20260723\CustomStickyNote.deps.json
+C:\Users\Administrator\AppData\Local\Temp\CustomStickyNote-build-20260723\CustomStickyNote.runtimeconfig.json
+C:\Users\Administrator\AppData\Local\Temp\CustomStickyNote-build-20260723\CustomStickyNote.dll
+C:\Users\Administrator\AppData\Local\Temp\CustomStickyNote-build-20260723\CustomStickyNote.pdb

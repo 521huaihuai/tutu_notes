@@ -237,8 +237,7 @@ public static class ShowDesktopGuardService
                     var noteIsTopmost = (noteExStyle & WS_EX_TOPMOST) != 0;
                     if (noteIsTopmost)
                     {
-                        var ok = Win32.SetWindowPos(noteHwnd, hwnd, 0, 0, 0, 0, flags);
-                        Log($"  SetWindowPos(note={noteHwnd}, after={hwnd}) ok={ok}, lastError={Marshal.GetLastWin32Error()} (was Topmost, cancelled and placed after foreground)");
+                        DemoteAndPlaceNoteAfter(noteHwnd, hwnd, "foreground");
                     }
                     else
                     {
@@ -269,12 +268,12 @@ public static class ShowDesktopGuardService
         else if (eventType == EVENT_SYSTEM_RESTOREALL)
         {
             // 恢复: 取消所有便签 Topmost, 并排在恢复窗口 (hwnd) 之后
-            // 关键: 用 SetWindowPos(note, hwnd) 而非 HWND_NOTOPMOST —
-            // HWND_NOTOPMOST 会把便签放在非 Topmost 窗口 Z order 顶部, 仍在恢复的浏览器之上,
-            // 导致浏览器被便签遮挡. 排在恢复窗口之后, 确保浏览器在便签之上.
+            // 必须先用 HWND_NOTOPMOST 显式解除置顶层, 再排在恢复窗口之后.
+            // 仅以 hwnd 作为 hWndInsertAfter 只会调整当前层级内的顺序,
+            // 无法可靠地取消 Topmost 属性.
             _isDesktopShown = false;
-            Log($"  RESTOREALL: _isDesktopShown=false, setting all notes after restored window (hwnd={hwnd})");
-            SetAllNotesZOrder(hwnd);
+            Log($"  RESTOREALL: _isDesktopShown=false, demoting Topmost notes after restored window (hwnd={hwnd})");
+            SetAllNotesZOrderIfTopmost(hwnd);
         }
     }
 
@@ -292,33 +291,6 @@ public static class ShowDesktopGuardService
                     if (noteHwnd == IntPtr.Zero) continue;
                     var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
                     Log($"  SetWindowPos(note={noteHwnd}, {(topmost ? "TOPMOST" : "NOTOPMOST")}) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
-                }
-                catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
-            }
-        }
-    }
-
-    /// <summary>
-    /// 把所有便签排在指定窗口之后 (Z order 在其下方).
-    /// 用于 RESTOREALL: 排在恢复的浏览器之后, 确保浏览器在便签之上不被遮挡.
-    /// </summary>
-    private static void SetAllNotesZOrder(IntPtr afterHwnd)
-    {
-        lock (_lock)
-        {
-            const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
-            foreach (var w in _windows)
-            {
-                try
-                {
-                    var noteHwnd = new WindowInteropHelper(w).Handle;
-                    if (noteHwnd == IntPtr.Zero) continue;
-                    // 排在恢复窗口之后; 若 afterHwnd 无效则 fallback 到 NOTOPMOST
-                    IntPtr insertAfter = (afterHwnd != IntPtr.Zero && afterHwnd != noteHwnd)
-                        ? afterHwnd
-                        : Win32.HWND_NOTOPMOST;
-                    var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
-                    Log($"  SetWindowPos(note={noteHwnd}, after={insertAfter}) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
                 }
                 catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
             }
@@ -379,7 +351,6 @@ public static class ShowDesktopGuardService
     {
         lock (_lock)
         {
-            const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
             const long WS_EX_TOPMOST = 0x00000008;
             foreach (var w in _windows)
             {
@@ -394,15 +365,36 @@ public static class ShowDesktopGuardService
                         Log($"  skip: note={noteHwnd} is not Topmost, no Z order change");
                         continue;
                     }
-                    IntPtr insertAfter = (afterHwnd != IntPtr.Zero && afterHwnd != noteHwnd)
-                        ? afterHwnd
-                        : Win32.HWND_NOTOPMOST;
-                    var ok = Win32.SetWindowPos(noteHwnd, insertAfter, 0, 0, 0, 0, flags);
-                    Log($"  SetWindowPos(note={noteHwnd}, after={insertAfter}) ok={ok}, lastError={Marshal.GetLastWin32Error()} (was Topmost, cancelled)");
+                    DemoteAndPlaceNoteAfter(noteHwnd, afterHwnd, "deferred restore");
                 }
                 catch (Exception ex) { Log($"  SetWindowPos failed: {ex.Message}"); }
             }
         }
+    }
+
+    /// <summary>
+    /// 将便签从置顶层降到普通窗口层，并排在指定窗口之后。
+    /// 解除 Topmost 与调整普通窗口层 Z order 是两个独立操作，必须依次执行。
+    /// </summary>
+    private static void DemoteAndPlaceNoteAfter(IntPtr noteHwnd, IntPtr afterHwnd, string reason)
+    {
+        const uint flags = Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE;
+        var demoted = Win32.SetWindowPos(noteHwnd, Win32.HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+        var demoteError = Marshal.GetLastWin32Error();
+        if (!demoted)
+        {
+            Log($"  Demote note={noteHwnd} failed, reason={reason}, lastError={demoteError}");
+            return;
+        }
+
+        if (afterHwnd == IntPtr.Zero || afterHwnd == noteHwnd)
+        {
+            Log($"  Demote note={noteHwnd} ok, reason={reason}, no target window");
+            return;
+        }
+
+        var placed = Win32.SetWindowPos(noteHwnd, afterHwnd, 0, 0, 0, 0, flags);
+        Log($"  Demote note={noteHwnd} ok, place after={afterHwnd} ok={placed}, reason={reason}, lastError={Marshal.GetLastWin32Error()}");
     }
 
     [DllImport("user32.dll")]
