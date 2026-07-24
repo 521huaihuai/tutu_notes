@@ -25,7 +25,7 @@ public sealed class TrayService : IDisposable
         _icon = new TaskbarIcon
         {
             Icon = LoadTrayIcon(),
-            ToolTipText = "便利贴 (左键双击新建, 右键菜单)"
+            ToolTipText = "图图便利签 (左键双击新建, 右键菜单)"
         };
 
         // 双击托盘 → 新建便签

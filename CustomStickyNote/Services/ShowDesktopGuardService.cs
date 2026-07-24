@@ -23,11 +23,11 @@ namespace CustomStickyNote.Services;
 ///
 /// 方案 (双 hook + 状态标志):
 /// 1. Hook A: EVENT_SYSTEM_FOREGROUND (0x0003) — 前台窗口变化
-/// 2. Hook B: EVENT_SYSTEM_MINIMIZEALL (0x0016) + RESTOREALL (0x0017) — 显示桌面/恢复
+/// 2. Hook B: EVENT_SYSTEM_MINIMIZESTART (0x0016) + MINIMIZEEND (0x0017) — 最小化/恢复
 ///
 /// 状态机 (_isDesktopShown):
-/// - MINIMIZEALL (显示桌面触发) → _isDesktopShown=true, 设所有便签 Topmost
-/// - RESTOREALL (恢复) → _isDesktopShown=false, 取消所有便签 Topmost
+/// - MINIMIZESTART 既可能由单窗口最小化触发，也可能由"显示桌面"触发；延迟确认桌面状态
+/// - MINIMIZEEND (恢复) → _isDesktopShown=false，取消仍处于 Topmost 的便利签
 /// - FOREGROUND:
 ///   * WorkerW/Progman 前台 (用户点击桌面) → 设 Topmost
 ///   * 普通应用窗口前台 → 仅当 _isDesktopShown=false 才取消 Topmost
@@ -38,11 +38,15 @@ public static class ShowDesktopGuardService
 {
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
-    private const uint EVENT_SYSTEM_MINIMIZEALL = 0x0016;
-    private const uint EVENT_SYSTEM_RESTOREALL = 0x0017;
+    private const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    private const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
     private const int OBJID_WINDOW = 0;
     private const string WorkerWClass = "WorkerW";
     private const string ProgmanClass = "Progman";
+    private const string ShellTrayClass = "Shell_TrayWnd";
+    private const string NotifyIconOverflowClass = "NotifyIconOverflowWindow";
+    private const string ForegroundStagingClass = "ForegroundStaging";
+    private const string MultitaskingViewFrameClass = "MultitaskingViewFrame";
 
     private static readonly HashSet<Window> _windows = new();
     // 必须保持委托引用, 防止 GC 回收回调委托导致崩溃
@@ -58,6 +62,9 @@ public static class ShowDesktopGuardService
     // 延迟检查定时器: 前台窗口是最小化状态时, 延迟 300ms 再检查是否恢复可见.
     // 区分"用户主动点击桌面应用窗口(正在恢复)"与"后台窗口抢前台(保持最小化)".
     private static Timer? _deferredCheckTimer;
+
+    // MINIMIZESTART 也会由单窗口最小化触发，延迟后才能可靠区分"显示桌面"。
+    private static Timer? _desktopShownCheckTimer;
 
     private static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -124,19 +131,35 @@ public static class ShowDesktopGuardService
         var result = IntPtr.Zero;
         Win32.EnumWindows((hwnd, _) =>
         {
-            if (hwnd == excludeHwnd) return true;
-            var className = GetWindowClass(hwnd);
-            if (className == WorkerWClass || className == ProgmanClass) return true;
-            if (!Win32.IsWindowVisible(hwnd)) return true;
-            if (Win32.IsIconic(hwnd)) return true;
-            var exStyle = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
-            const long WS_EX_TOOLWINDOW = 0x00000080;
-            if ((exStyle & WS_EX_TOOLWINDOW) != 0) return true;
+            if (!IsVisibleNormalApplicationWindow(hwnd, excludeHwnd)) return true;
             // 记录最后一个匹配的 (Z order 最底部的普通窗口)
             result = hwnd;
             return true; // 继续遍历
         }, IntPtr.Zero);
         return result;
+    }
+
+    private static bool HasVisibleNormalApplicationWindow()
+    {
+        var found = false;
+        Win32.EnumWindows((hwnd, _) =>
+        {
+            if (!IsVisibleNormalApplicationWindow(hwnd, IntPtr.Zero)) return true;
+            found = true;
+            return false;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    private static bool IsVisibleNormalApplicationWindow(IntPtr hwnd, IntPtr excludeHwnd)
+    {
+        if (hwnd == IntPtr.Zero || hwnd == excludeHwnd) return false;
+        var className = GetWindowClass(hwnd);
+        if (className == WorkerWClass || className == ProgmanClass) return false;
+        if (!Win32.IsWindowVisible(hwnd) || Win32.IsIconic(hwnd)) return false;
+        var exStyle = Win32.GetWindowLongPtr(hwnd, Win32.GWL_EXSTYLE).ToInt64();
+        const long WS_EX_TOOLWINDOW = 0x00000080;
+        return (exStyle & WS_EX_TOOLWINDOW) == 0;
     }
 
     /// <summary>
@@ -165,7 +188,7 @@ public static class ShowDesktopGuardService
         {
             _minimizeRestoreDelegate = new WinEventDelegate(OnMinimizeRestore);
             _minimizeRestoreHook = SetWinEventHook(
-                EVENT_SYSTEM_MINIMIZEALL, EVENT_SYSTEM_RESTOREALL,
+                EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND,
                 IntPtr.Zero, _minimizeRestoreDelegate, 0, 0, WINEVENT_OUTOFCONTEXT);
             Log($"EnsureHook minimize/restore: _minimizeRestoreHook={_minimizeRestoreHook}, lastError={Marshal.GetLastWin32Error()}");
         }
@@ -198,6 +221,27 @@ public static class ShowDesktopGuardService
 
         lock (_lock)
         {
+            var foregroundIsNote = false;
+            foreach (var note in _windows)
+            {
+                if (new WindowInteropHelper(note).Handle == hwnd)
+                {
+                    foregroundIsNote = true;
+                    break;
+                }
+            }
+
+            // 一些正常应用（例如 360DirectUICls）也会标记 WS_EX_TOOLWINDOW。
+            // 显示桌面后，只有已知的 Shell 工具窗口应保持便利签置顶。
+            if (fgIsToolWindow && _isDesktopShown && fgIsActive &&
+                !foregroundIsNote && !IsShellToolWindow(className))
+            {
+                _isDesktopShown = false;
+                Log($"  demote: active tool application foreground (class='{className}')");
+                SetAllNotesZOrderIfTopmost(hwnd);
+                return;
+            }
+
             foreach (var w in _windows)
             {
                 var noteHwnd = new WindowInteropHelper(w).Handle;
@@ -208,13 +252,14 @@ public static class ShowDesktopGuardService
                 if (isDesktop)
                 {
                     // WorkerW/Progman 前台 (用户点击桌面): 设 Topmost
+                    _isDesktopShown = true;
                     var ok = Win32.SetWindowPos(noteHwnd, Win32.HWND_TOPMOST, 0, 0, 0, 0, flags);
                     Log($"  SetWindowPos(note={noteHwnd}, TOPMOST) ok={ok}, lastError={Marshal.GetLastWin32Error()}");
                 }
                 else if (fgIsToolWindow)
                 {
-                    // 工具窗口前台: 不动 (保持当前 Topmost 状态)
-                    Log($"  keep: ToolWindow foreground, no Z order change for note={noteHwnd}");
+                    // 已知 Shell 工具窗口或便利签自身前台: 不动。
+                    Log($"  keep: Shell/note ToolWindow foreground, no Z order change for note={noteHwnd}");
                 }
                 else if (!fgIsActive)
                 {
@@ -249,8 +294,8 @@ public static class ShowDesktopGuardService
     }
 
     /// <summary>
-    /// Hook B 回调: MINIMIZEALL (显示桌面触发) / RESTOREALL (恢复).
-    /// 这两个事件可靠检测任务栏"显示桌面"按钮 (EVENT_SYSTEM_FOREGROUND 不可靠).
+    /// Hook B 回调: MINIMIZESTART / MINIMIZEEND.
+    /// 0x0016 同时用于单窗口最小化和"显示桌面"，不能直接据此改变便利签层级。
     /// </summary>
     private static void OnMinimizeRestore(
         IntPtr hWinEventHook, uint eventType, IntPtr hwnd,
@@ -258,23 +303,51 @@ public static class ShowDesktopGuardService
     {
         Log($"OnMinimizeRestore: eventType=0x{eventType:X}, hwnd={hwnd}, idObject={idObject}");
 
-        if (eventType == EVENT_SYSTEM_MINIMIZEALL)
+        if (eventType == EVENT_SYSTEM_MINIMIZESTART)
         {
-            // "显示桌面"触发: 设所有便签 Topmost
-            _isDesktopShown = true;
-            Log($"  MINIMIZEALL: _isDesktopShown=true, setting all notes TOPMOST");
-            SetAllNotesTopmost(true);
+            Log("  MINIMIZESTART: scheduling desktop-state check");
+            StartDesktopShownCheck();
         }
-        else if (eventType == EVENT_SYSTEM_RESTOREALL)
+        else if (eventType == EVENT_SYSTEM_MINIMIZEEND)
         {
             // 恢复: 取消所有便签 Topmost, 并排在恢复窗口 (hwnd) 之后
             // 必须先用 HWND_NOTOPMOST 显式解除置顶层, 再排在恢复窗口之后.
             // 仅以 hwnd 作为 hWndInsertAfter 只会调整当前层级内的顺序,
             // 无法可靠地取消 Topmost 属性.
             _isDesktopShown = false;
-            Log($"  RESTOREALL: _isDesktopShown=false, demoting Topmost notes after restored window (hwnd={hwnd})");
+            Log($"  MINIMIZEEND: _isDesktopShown=false, demoting Topmost notes after restored window (hwnd={hwnd})");
             SetAllNotesZOrderIfTopmost(hwnd);
         }
+    }
+
+    /// <summary>
+    /// 判断 MINIMIZESTART 是否确实进入了桌面状态。
+    /// 单独最小化 C 时，B 仍是可见的普通窗口，不能将便利签置顶。
+    /// </summary>
+    private static void StartDesktopShownCheck()
+    {
+        _desktopShownCheckTimer?.Dispose();
+        _desktopShownCheckTimer = new Timer(_ =>
+        {
+            Application.Current?.Dispatcher.Invoke(() =>
+            {
+                var foreground = Win32.GetForegroundWindow();
+                var foregroundClass = GetWindowClass(foreground);
+                var foregroundIsDesktop = foregroundClass == WorkerWClass || foregroundClass == ProgmanClass;
+                var noVisibleNormalWindows = !HasVisibleNormalApplicationWindow();
+                Log($"DesktopShownCheck: fg={foreground}, class='{foregroundClass}', foregroundIsDesktop={foregroundIsDesktop}, noVisibleNormalWindows={noVisibleNormalWindows}");
+
+                if (!foregroundIsDesktop && !noVisibleNormalWindows)
+                {
+                    Log("DesktopShownCheck: single-window minimize, keep current Z order");
+                    return;
+                }
+
+                _isDesktopShown = true;
+                Log("DesktopShownCheck: desktop shown, setting all notes TOPMOST");
+                SetAllNotesTopmost(true);
+            });
+        }, null, 150, Timeout.Infinite);
     }
 
     private static void SetAllNotesTopmost(bool topmost)
@@ -304,6 +377,14 @@ public static class ShowDesktopGuardService
         return sb.ToString();
     }
 
+    private static bool IsShellToolWindow(string className)
+    {
+        return className == ShellTrayClass ||
+               className == NotifyIconOverflowClass ||
+               className == ForegroundStagingClass ||
+               className == MultitaskingViewFrameClass;
+    }
+
     /// <summary>
     /// 启动延迟检查: 300ms 后检查当前前台窗口是否恢复可见.
     /// 用于区分"用户主动点击桌面应用窗口(正在恢复)"与"后台窗口抢前台(保持最小化)".
@@ -326,7 +407,12 @@ public static class ShowDesktopGuardService
                 var isIconic = Win32.IsIconic(fg);
                 var isVisible = Win32.IsWindowVisible(fg);
                 Log($"DeferredCheck: fg={fg}, isIconic={isIconic}, isVisible={isVisible}, _isDesktopShown={_isDesktopShown}");
-                if (!isIconic && isVisible)
+                var className = GetWindowClass(fg);
+                var fgIsDesktop = className == WorkerWClass || className == ProgmanClass;
+                var fgExStyle = Win32.GetWindowLongPtr(fg, Win32.GWL_EXSTYLE).ToInt64();
+                const long WS_EX_TOOLWINDOW = 0x00000080;
+                var fgIsToolWindow = (fgExStyle & WS_EX_TOOLWINDOW) != 0;
+                if (_isDesktopShown && !isIconic && isVisible && !fgIsDesktop && !fgIsToolWindow)
                 {
                     // 窗口已恢复可见: 用户主动激活.
                     // 只在便签当前是 Topmost 时才取消 Topmost 并调整 Z order.
@@ -337,7 +423,7 @@ public static class ShowDesktopGuardService
                 }
                 else
                 {
-                    Log("DeferredCheck: window still iconic/hidden, keep Topmost");
+                    Log("DeferredCheck: no desktop restore detected, keep current Z order");
                 }
             });
         }, null, 300, Timeout.Infinite);

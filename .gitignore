@@ -1,0 +1,148 @@
+# ==========================================================
+# .NET / WPF / Visual Studio .gitignore
+# ==========================================================
+
+# ----- Build 输出 -----
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Pp]ublish/
+[Aa]rtifacts/
+*.dll
+*.exe
+*.pdb
+*.mdb
+*.cache
+*.deps.json
+*.runtimeconfig.json
+*.baml
+*.g.cs
+*.g.resources
+*_MarkupCompile.cache
+*_MarkupCompile.lref
+*.AssemblyInfo.cs
+*.AssemblyInfoInputs.cache
+*.GeneratedMSBuildEditorConfig.editorconfig
+*.GlobalUsings.g.cs
+*.csproj.AssemblyReference.cache
+*.csproj.CoreCompileInputs.cache
+*.csproj.FileListAbsolute.txt
+*.genruntimeconfig.cache
+*.assets.cache
+*.csproj.nuget.dgspec.json
+*.csproj.nuget.g.props
+*.csproj.nuget.g.targets
+project.assets.json
+project.nuget.cache
+*.Up2Date
+
+# WPF 临时工程
+*_wpftmp.csproj
+*_wpftmp.csproj.nuget.dgspec.json
+*_wpftmp.csproj.nuget.g.props
+*_wpftmp.csproj.nuget.g.targets
+**/TemporaryGeneratedFile_*
+
+# ----- Visual Studio / Rider / VSCode -----
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.rsuser
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]uild/
+build_*/
+*.tlog
+*.idb
+*.ilk
+*.meta
+*.obj
+*.iobj
+*.ipdb
+*.opendb
+*.opensdf
+*.sdf
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.log
+*.binlog
+
+# JetBrains Rider
+.idea/
+*.sln.iml
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# ----- NuGet -----
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# ----- .NET CLI -----
+project.lock.json
+*.nuget.cache
+
+# ----- Test 结果 -----
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+TestResult.xml
+[Tt]est[Rr]esult*.xml
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# ----- 发布/打包 -----
+*.publishproj
+*.publishsettings
+PublishScripts/
+*.zip
+*.tar
+*.gz
+
+# ----- 本地机密/环境 -----
+*.env
+.env.*
+*.secret
+appsettings.*.json
+!appsettings.json
+!appsettings.Example.json
+
+# ----- CodeGraph (本地工具缓存) -----
+.codegraph/daemon.pid
+.codegraph/cache/
+.codegraph/*.db
+.codegraph/*.db-wal
+.codegraph/*.db-shm
+.codegraph/.dirty
+.codegraph/*.log
+
+# ----- 操作系统杂项 -----
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+*.swp
+*~
